@@ -17,44 +17,127 @@ export class AssetPalette {
 
   getAvailableAssets() {
     return [
+      // Speech Bubbles
       {
         type: 'speechBubble',
+        subtype: 'speech',
         name: 'Speech Bubble',
         icon: '💬',
-        description: 'Add a speech bubble with text'
+        description: 'Add a speech bubble with text',
+        category: 'bubbles'
+      },
+      {
+        type: 'speechBubble',
+        subtype: 'thought',
+        name: 'Thought Bubble',
+        icon: '💭',
+        description: 'Add a thought bubble',
+        category: 'bubbles'
+      },
+      {
+        type: 'speechBubble',
+        subtype: 'shout',
+        name: 'Shout Bubble',
+        icon: '📢',
+        description: 'Add a shout/yell bubble',
+        category: 'bubbles'
+      },
+      
+      // Action Shapes
+      {
+        type: 'actionShape',
+        subtype: 'burst',
+        name: 'Action Burst',
+        icon: '💥',
+        description: 'Add burst-style action text',
+        category: 'actions'
       },
       {
         type: 'actionShape',
-        name: 'Action Text',
-        icon: '💥',
-        description: 'Add action text like "BAM!" or "POW!"'
+        subtype: 'jagged',
+        name: 'Action Jagged',
+        icon: '⚡',
+        description: 'Add jagged action text',
+        category: 'actions'
+      },
+      {
+        type: 'actionShape',
+        subtype: 'cloud',
+        name: 'Action Cloud',
+        icon: '☁️',
+        description: 'Add cloud-style action text',
+        category: 'actions'
+      },
+      
+      // Characters
+      {
+        type: 'character',
+        subtype: 'simple',
+        name: 'Simple Figure',
+        icon: '🚶',
+        description: 'Add a simple stick figure',
+        category: 'characters'
       },
       {
         type: 'character',
-        name: 'Character',
+        subtype: 'human',
+        name: 'Human Character',
         icon: '👤',
-        description: 'Add a character to the scene'
+        description: 'Add a detailed human character',
+        category: 'characters'
+      },
+      {
+        type: 'character',
+        subtype: 'animal',
+        name: 'Animal Character',
+        icon: '🐱',
+        description: 'Add an animal character',
+        category: 'characters'
+      },
+      
+      // Backgrounds
+      {
+        type: 'background',
+        subtype: 'solid',
+        name: 'Solid Color',
+        icon: '🎨',
+        description: 'Change cell background color',
+        category: 'backgrounds'
       },
       {
         type: 'background',
-        name: 'Background',
+        subtype: 'cityscape',
+        name: 'Cityscape',
         icon: '🏙️',
-        description: 'Change cell background'
+        description: 'Add city background',
+        category: 'backgrounds'
+      },
+      {
+        type: 'background',
+        subtype: 'nature',
+        name: 'Nature Scene',
+        icon: '🌳',
+        description: 'Add nature background',
+        category: 'backgrounds'
       }
     ];
   }
 
   render() {
+    // Group assets by category
+    const categories = this.groupAssetsByCategory();
+    
     this.container.innerHTML = `
       <div class="asset-palette">
         <h3>Assets</h3>
-        <div class="asset-categories">
+        ${Object.entries(categories).map(([categoryName, assets]) => `
           <div class="asset-category">
-            <h4>Components</h4>
+            <h4>${this.getCategoryDisplayName(categoryName)}</h4>
             <div class="asset-grid">
-              ${this.assets.map(asset => `
+              ${assets.map(asset => `
                 <div class="asset-item" 
                      data-asset-type="${asset.type}"
+                     data-asset-subtype="${asset.subtype || ''}"
                      draggable="true"
                      title="${asset.description}">
                   <div class="asset-icon">${asset.icon}</div>
@@ -63,11 +146,33 @@ export class AssetPalette {
               `).join('')}
             </div>
           </div>
-        </div>
+        `).join('')}
       </div>
     `;
 
     this.addStyles();
+  }
+
+  groupAssetsByCategory() {
+    return this.assets.reduce((categories, asset) => {
+      const category = asset.category || 'other';
+      if (!categories[category]) {
+        categories[category] = [];
+      }
+      categories[category].push(asset);
+      return categories;
+    }, {});
+  }
+
+  getCategoryDisplayName(categoryName) {
+    const displayNames = {
+      bubbles: 'Speech & Thought',
+      actions: 'Action Effects',
+      characters: 'Characters',
+      backgrounds: 'Backgrounds',
+      other: 'Other'
+    };
+    return displayNames[categoryName] || categoryName;
   }
 
   addStyles() {
@@ -168,13 +273,15 @@ export class AssetPalette {
     this.container.addEventListener('dragstart', (e) => {
       if (e.target.classList.contains('asset-item')) {
         const assetType = e.target.dataset.assetType;
+        const assetSubtype = e.target.dataset.assetSubtype;
         e.dataTransfer.setData('application/json', JSON.stringify({
           type: assetType,
+          subtype: assetSubtype,
           source: 'palette'
         }));
         
         e.target.classList.add('dragging');
-        this.eventBus.emit('asset:dragStart', assetType);
+        this.eventBus.emit('asset:dragStart', { type: assetType, subtype: assetSubtype });
       }
     });
 
@@ -209,7 +316,7 @@ export class AssetPalette {
             y: e.clientY - rect.top
           };
           
-          this.eventBus.emit('asset:drop', data.type, position);
+          this.eventBus.emit('asset:drop', data, position);
         }
       } catch (error) {
         console.error('Error parsing drop data:', error);

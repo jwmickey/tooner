@@ -47,4 +47,21 @@ export class Storage {
       .filter(key => key.startsWith(this.prefix))
       .map(key => key.substring(this.prefix.length));
   }
+
+  // Comic strip specific methods
+  async saveComicStrip(comicStrip) {
+    return this.save('current_comic', comicStrip);
+  }
+
+  async loadComicStrip() {
+    return this.load('current_comic');
+  }
+
+  async saveUserPreferences(preferences) {
+    return this.save('user_prefs', preferences);
+  }
+
+  async loadUserPreferences() {
+    return this.load('user_prefs');
+  }
 }

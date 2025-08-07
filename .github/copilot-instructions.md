@@ -1,10 +1,11 @@
 <!-- Use this file to provide workspace-specific custom instructions to Copilot. For more details, visit https://code.visualstudio.com/docs/copilot/copilot-customization#_use-a-githubcopilotinstructionsmd-file -->
 
-This is a modern HTML5 + JavaScript web project scaffolded with Vite. Use best practices for vanilla JS and web development.
-
 ## Project: Toons - Comic Strip Builder
 
 This is a cartoon strip builder application targeting both kids and adults who want to create newspaper-style comic strips.
+
+Use Fabric.js version 6.  Reference the Fabric.js documentation for API details: https://fabricjs.com/docs/ or 
+read the #githubRepo at https://github.com/fabricjs/fabric.js
 
 ### Architecture:
 - **Core**: App.js (main controller), EventBus.js (communication), Storage.js (persistence)

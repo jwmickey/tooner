@@ -3,6 +3,7 @@ import { Storage } from './Storage.js';
 import { ComicStripEditor } from '../views/Editor/ComicStripEditor.js';
 import { AssetPalette } from '../views/AssetPalette/AssetPalette.js';
 import { Toolbar } from '../views/Toolbar/Toolbar.js';
+import { PropertiesPanel } from '../views/PropertiesPanel/PropertiesPanel.js';
 
 /**
  * Main application controller that orchestrates all components
@@ -34,6 +35,11 @@ export class App {
       storage: this.storage
     });
 
+    this.components.propertiesPanel = new PropertiesPanel({
+      container: document.getElementById('properties-panel'),
+      eventBus: this.eventBus
+    });
+
     // Set up global event listeners
     this.setupEventListeners();
 
@@ -49,12 +55,25 @@ export class App {
     this.eventBus.on('app:new', () => this.createNewComicStrip());
   }
 
-  loadOrCreateComicStrip() {
-    const savedStrip = this.storage.load('currentComicStrip');
-    if (savedStrip) {
-      this.eventBus.emit('editor:loadComicStrip', savedStrip);
-    } else {
-      this.createNewComicStrip();
+  async loadOrCreateComicStrip() {
+    try {
+      const savedStrip = await this.storage.loadComicStrip();
+      if (savedStrip) {
+        console.log('Loaded saved comic strip:', savedStrip);
+        this.eventBus.emit('editor:loadComicStrip', savedStrip);
+      } else {
+        console.log('No saved strip found, creating new one');
+        const newStrip = this.createNewComicStrip();
+        console.log('Created new comic strip:', newStrip);
+        this.eventBus.emit('editor:loadComicStrip', newStrip);
+        await this.storage.saveComicStrip(newStrip);
+      }
+    } catch (error) {
+      console.error('Error loading comic strip:', error);
+      // Fallback to creating a new strip
+      const newStrip = this.createNewComicStrip();
+      console.log('Fallback: created new comic strip:', newStrip);
+      this.eventBus.emit('editor:loadComicStrip', newStrip);
     }
   }
 
@@ -72,7 +91,7 @@ export class App {
       }))
     };
     
-    this.eventBus.emit('editor:loadComicStrip', defaultStrip);
+    return defaultStrip;
   }
 
   saveComicStrip() {

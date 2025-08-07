@@ -1,5 +1,8 @@
 import { Canvas, Rect, Ellipse, Text, Group, Circle } from 'fabric';
 import { ComicStrip } from '../../models/ComicStrip.js';
+import { SpeechBubble } from '../../models/Components/SpeechBubble.js';
+import { ActionShape } from '../../models/Components/ActionShape.js';
+import { Character } from '../../models/Components/Character.js';
 
 /**
  * Main comic strip editor component using Fabric.js
@@ -23,6 +26,9 @@ export class ComicStripEditor {
     this.createCanvas();
     this.setupEventListeners();
     this.setupCanvasEvents();
+    
+    // Ensure canvas is rendered even without comic strip
+    this.canvas.renderAll();
   }
 
   createCanvas() {
@@ -35,10 +41,13 @@ export class ComicStripEditor {
     this.canvas = new Canvas('comic-canvas', {
       width: window.innerWidth * 0.7, // 70% of viewport width
       height: window.innerHeight * 0.8, // 80% of viewport height
-      backgroundColor: '#f5f5f5',
+      backgroundColor: '#f8f9fa',
       selection: true,
       preserveObjectStacking: true
     });
+
+    // Force initial render
+    this.canvas.renderAll();
 
     // Make canvas responsive
     this.makeCanvasResponsive();
@@ -49,12 +58,23 @@ export class ComicStripEditor {
       const containerWidth = this.container.clientWidth;
       const containerHeight = this.container.clientHeight;
       
+      // Ensure we have valid dimensions
+      const width = Math.max(800, containerWidth);
+      const height = Math.max(600, containerHeight);
+      
       this.canvas.setDimensions({
-        width: containerWidth,
-        height: containerHeight
+        width: width,
+        height: height
       });
       
-      this.updateCellLayout();
+      // Re-apply background color after resize
+      this.canvas.backgroundColor = '#f8f9fa';
+      this.canvas.renderAll();
+      
+      if (this.comicStrip) {
+        this.updateCellLayout();
+        this.renderComicStrip();
+      }
     };
 
     window.addEventListener('resize', resizeCanvas);
@@ -62,46 +82,112 @@ export class ComicStripEditor {
   }
 
   setupEventListeners() {
-    // Listen for app events
-    this.eventBus.on('editor:loadComicStrip', (data) => this.loadComicStrip(data));
-    this.eventBus.on('editor:getComicStripData', (callback) => {
-      callback(this.comicStrip ? this.comicStrip.toJSON() : null);
+    this.eventBus.on('editor:loadComicStrip', (comicStripData) => {
+      console.log('ComicStripEditor received comic strip data:', comicStripData);
+      this.currentComicStrip = comicStripData;
+      this.comicStrip = new ComicStrip(comicStripData); // Create ComicStrip instance
+      this.renderComicStrip();
     });
-    this.eventBus.on('editor:export', (format) => this.exportComicStrip(format));
-    this.eventBus.on('editor:addCell', () => this.addCell());
-    this.eventBus.on('editor:removeCell', (cellId) => this.removeCell(cellId));
-    this.eventBus.on('editor:removeLastCell', () => this.removeLastCell());
-    
-    // Comic metadata events
-    this.eventBus.on('comic:updateTitle', (title) => this.updateComicTitle(title));
-    this.eventBus.on('comic:updateAuthor', (author) => this.updateComicAuthor(author));
-    
-    // Asset palette events
-    this.eventBus.on('asset:dragStart', (asset) => this.handleAssetDragStart(asset));
-    this.eventBus.on('asset:drop', (asset, position) => this.handleAssetDrop(asset, position));
+
+    this.eventBus.on('asset:dragStart', (asset) => {
+      this.isDragging = true;
+    });
+
+    this.eventBus.on('asset:dragEnd', () => {
+      this.isDragging = false;
+    });
+
+    // Handle asset drops from the palette
+    this.eventBus.on('asset:drop', (assetData, position) => {
+      console.log('Asset dropped:', assetData, 'at position:', position);
+      this.handleAssetDrop(assetData, position);
+    });
+  }
+
+  handleAssetDragStart(asset) {
+    // Optional: Add visual feedback when dragging starts
+    console.log('Drag started for:', asset);
+  }
+
+  handleCanvasDrop(e) {
+    // Handle drops directly on canvas
+    console.log('Canvas drop:', e);
   }
 
   setupCanvasEvents() {
-    // Object selection
+    let isInteractingWithUI = false;
+    let mouseDownTime = 0;
+    let isDragging = false;
+    
+    // Track when user is interacting with UI elements
+    document.addEventListener('mousedown', (e) => {
+      // Check if click is on properties panel or other UI elements
+      const isPropertiesPanel = e.target.closest('#properties-panel');
+      const isAssetPalette = e.target.closest('#asset-palette');
+      const isToolbar = e.target.closest('#toolbar');
+      
+      isInteractingWithUI = !!(isPropertiesPanel || isAssetPalette || isToolbar);
+    });
+    
+    // Track canvas mouse events
+    this.canvas.on('mouse:down', (e) => {
+      mouseDownTime = Date.now();
+      isDragging = false;
+      
+      // If clicking on empty canvas (not on an object), clear selection
+      if (!e.target) {
+        this.canvas.discardActiveObject();
+        this.eventBus.emit('object:deselected');
+      }
+    });
+    
+    this.canvas.on('object:moving', (e) => {
+      isDragging = true;
+      this.constrainObjectToCell(e.target);
+    });
+
+    this.canvas.on('mouse:up', (e) => {
+      const mouseUpTime = Date.now();
+      const timeDiff = mouseUpTime - mouseDownTime;
+      
+      // Reset dragging state after a short delay
+      setTimeout(() => {
+        isDragging = false;
+      }, 100);
+    });
+
+    // Only emit selection events for actual canvas interactions
     this.canvas.on('selection:created', (e) => {
-      this.eventBus.emit('object:selected', e.selected);
+      if (!isDragging && !isInteractingWithUI) {
+        setTimeout(() => {
+          if (!isDragging) {
+            this.eventBus.emit('object:selected', e.selected);
+          }
+        }, 50);
+      }
     });
 
     this.canvas.on('selection:updated', (e) => {
-      this.eventBus.emit('object:selected', e.selected);
+      if (!isDragging && !isInteractingWithUI) {
+        setTimeout(() => {
+          if (!isDragging) {
+            this.eventBus.emit('object:selected', e.selected);
+          }
+        }, 50);
+      }
     });
 
     this.canvas.on('selection:cleared', () => {
-      this.eventBus.emit('object:deselected');
+      // Only clear selection if not interacting with UI
+      if (!isInteractingWithUI) {
+        this.eventBus.emit('object:deselected');
+      }
     });
 
-    // Object modification
+    // Object modification - update data but don't auto-show properties after drag
     this.canvas.on('object:modified', (e) => {
       this.updateAssetFromFabricObject(e.target);
-    });
-
-    this.canvas.on('object:moving', (e) => {
-      this.constrainObjectToCell(e.target);
+      // Don't automatically show properties after dragging - let user click to select
     });
 
     // Drop zone handling
@@ -117,12 +203,23 @@ export class ComicStripEditor {
   }
 
   renderComicStrip() {
+    console.log('renderComicStrip called, currentComicStrip:', this.currentComicStrip);
+    
     // Clear canvas
     this.canvas.clear();
     this.cells = [];
 
-    if (!this.comicStrip) return;
+    // Restore background color after clearing
+    this.canvas.backgroundColor = '#f8f9fa';
+    this.canvas.renderAll();
 
+    if (!this.comicStrip) {
+      console.log('No comicStrip instance found');
+      return;
+    }
+    
+    console.log('Rendering comic strip with', this.comicStrip.cells.length, 'cells');
+    
     // Calculate layout
     this.updateCellLayout();
 
@@ -193,8 +290,7 @@ export class ComicStripEditor {
   }
 
   renderAsset(assetData, cellId) {
-    // This will be expanded as we add different asset types
-    // For now, create a simple placeholder rectangle
+    // Enhanced asset rendering using specific asset classes
     const cell = this.cells.find(c => c.id === cellId);
     if (!cell) return;
 
@@ -202,13 +298,16 @@ export class ComicStripEditor {
     
     switch (assetData.type) {
       case 'speechBubble':
-        fabricObject = this.createSpeechBubble(assetData);
+        const speechBubble = new SpeechBubble(assetData);
+        fabricObject = speechBubble.render(this.canvas);
         break;
       case 'actionShape':
-        fabricObject = this.createActionShape(assetData);
+        const actionShape = new ActionShape(assetData);
+        fabricObject = actionShape.render(this.canvas);
         break;
       case 'character':
-        fabricObject = this.createCharacter(assetData);
+        const character = new Character(assetData);
+        fabricObject = character.render(this.canvas);
         break;
       default:
         fabricObject = this.createGenericAsset(assetData);
@@ -326,24 +425,129 @@ export class ComicStripEditor {
     }
   }
 
-  handleAssetDrop(assetType, position) {
+  deleteAsset(assetId, cellId) {
+    // Remove from data model
+    this.comicStrip.removeAssetFromCell(cellId, assetId);
+    
+    // Remove from canvas
+    const objects = this.canvas.getObjects();
+    const fabricObject = objects.find(obj => obj.assetId === assetId);
+    if (fabricObject) {
+      this.canvas.remove(fabricObject);
+      this.canvas.renderAll();
+    }
+  }
+
+  refreshAsset(assetId, cellId) {
+    // Find and remove the old fabric object
+    const objects = this.canvas.getObjects();
+    const oldObject = objects.find(obj => obj.assetId === assetId);
+    if (oldObject) {
+      this.canvas.remove(oldObject);
+    }
+
+    // Find the asset data and re-render
+    const cell = this.cells.find(c => c.id === cellId);
+    if (cell) {
+      const assetData = cell.data.assets.find(a => a.id === assetId);
+      if (assetData) {
+        this.renderAsset(assetData, cellId);
+        this.canvas.renderAll();
+      }
+    }
+  }
+
+  quickAddAsset(assetData) {
+    // Add asset to the center of the first cell
+    if (this.cells.length > 0) {
+      const firstCell = this.cells[0];
+      const centerPosition = {
+        x: firstCell.bounds.width / 2,
+        y: firstCell.bounds.height / 2
+      };
+      
+      this.handleAssetDrop(assetData, {
+        x: firstCell.bounds.x + centerPosition.x,
+        y: firstCell.bounds.y + centerPosition.y
+      });
+    }
+  }
+
+  handleAssetDrop(assetData, position) {
+    console.log('handleAssetDrop called with:', assetData, position);
+    
     // Find which cell the asset was dropped on
     const cell = this.findCellAtPosition(position);
+    console.log('Found cell:', cell);
+    
     if (cell) {
       const newAsset = {
-        type: assetType,
+        id: `asset-${Date.now()}`,
+        type: assetData.type,
+        subtype: assetData.subtype,
         position: {
           x: position.x - cell.bounds.x,
           y: position.y - cell.bounds.y
-        },
-        text: assetType === 'speechBubble' ? 'Hello!' : 
-              assetType === 'actionShape' ? 'BAM!' : ''
+        }
       };
 
+      // Set default properties based on asset type and subtype
+      switch (assetData.type) {
+        case 'speechBubble':
+          newAsset.text = 'Hello!';
+          newAsset.bubbleStyle = assetData.subtype || 'speech';
+          break;
+        case 'actionShape':
+          newAsset.text = this.getRandomActionWord();
+          newAsset.shapeStyle = assetData.subtype || 'burst';
+          break;
+        case 'character':
+          newAsset.characterType = assetData.subtype || 'simple';
+          newAsset.expression = 'neutral';
+          break;
+        case 'background':
+          this.handleBackgroundDrop(cell, assetData.subtype);
+          return; // Background is handled differently
+      }
+
+      console.log('Adding new asset:', newAsset);
       this.comicStrip.addAssetToCell(cell.id, newAsset);
       this.renderAsset(newAsset, cell.id);
       this.canvas.renderAll();
+    } else {
+      console.log('No cell found at position:', position);
     }
+  }
+
+  getRandomActionWord() {
+    const words = ['BAM!', 'POW!', 'WHAM!', 'BANG!', 'CRASH!', 'BOOM!', 'ZAP!', 'KAPOW!'];
+    return words[Math.floor(Math.random() * words.length)];
+  }
+
+  handleBackgroundDrop(cell, backgroundType) {
+    switch (backgroundType) {
+      case 'solid':
+        // Show color picker (simplified for now)
+        const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3'];
+        const randomColor = colors[Math.floor(Math.random() * colors.length)];
+        this.comicStrip.updateCellBackground(cell.id, { color: randomColor });
+        break;
+      case 'cityscape':
+        this.comicStrip.updateCellBackground(cell.id, { 
+          type: 'pattern', 
+          pattern: 'cityscape',
+          color: '#87ceeb' 
+        });
+        break;
+      case 'nature':
+        this.comicStrip.updateCellBackground(cell.id, { 
+          type: 'pattern', 
+          pattern: 'nature',
+          color: '#90EE90' 
+        });
+        break;
+    }
+    this.renderComicStrip(); // Re-render to show background changes
   }
 
   findCellAtPosition(position) {
@@ -404,6 +608,11 @@ export class ComicStripEditor {
     };
 
     this.comicStrip.updateAssetInCell(fabricObject.cellId, fabricObject.assetId, updates);
+    
+    // Update the assetData reference on the fabric object
+    if (fabricObject.assetData) {
+      Object.assign(fabricObject.assetData, updates);
+    }
   }
 
   exportComicStrip(format = 'svg') {

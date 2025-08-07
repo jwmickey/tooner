@@ -30,6 +30,18 @@ export class Toolbar {
         </div>
 
         <div class="toolbar-section">
+          <button class="toolbar-btn" data-action="add-speech" title="Quick Add Speech Bubble">
+            💬 Speech
+          </button>
+          <button class="toolbar-btn" data-action="add-action" title="Quick Add Action Text">
+            💥 Action
+          </button>
+          <button class="toolbar-btn" data-action="add-character" title="Quick Add Character">
+            👤 Character
+          </button>
+        </div>
+
+        <div class="toolbar-section">
           <button class="toolbar-btn" data-action="add-cell" title="Add Cell">
             ➕ Add Cell
           </button>
@@ -242,6 +254,18 @@ export class Toolbar {
       
       case 'export-json':
         this.eventBus.emit('app:export', 'json');
+        break;
+      
+      case 'add-speech':
+        this.eventBus.emit('editor:quickAdd', { type: 'speechBubble', subtype: 'speech' });
+        break;
+      
+      case 'add-action':
+        this.eventBus.emit('editor:quickAdd', { type: 'actionShape', subtype: 'burst' });
+        break;
+      
+      case 'add-character':
+        this.eventBus.emit('editor:quickAdd', { type: 'character', subtype: 'simple' });
         break;
       
       default:
