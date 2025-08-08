@@ -7,7 +7,7 @@ export class PropertiesPanel {
     this.eventBus = eventBus;
     this.selectedAsset = null;
     this.selectedObject = null;
-    
+    this.editMode = false;
     this.init();
   }
 
@@ -18,16 +18,15 @@ export class PropertiesPanel {
 
   render() {
     this.container.innerHTML = `
-      <div class="properties-panel">
-        <h3>Properties</h3>
+      <div class="properties-panel${this.editMode ? ' visible' : ''}" id="properties-panel">
+        <h3>Properties
+          <button class="property-close" title="Close">×</button>
+        </h3>
         <div id="properties-content">
-          <div class="no-selection">
-            <p>Select an asset to edit its properties</p>
-          </div>
+          ${this.editMode ? '' : '<div class="no-selection"><p>Select an asset to edit its properties</p></div>'}
         </div>
       </div>
     `;
-
     this.addStyles();
   }
 
@@ -37,9 +36,30 @@ export class PropertiesPanel {
       style.id = 'properties-panel-styles';
       style.textContent = `
         .properties-panel {
+          position: fixed;
+          top: 0;
+          right: 0;
+          width: 340px;
+          max-width: 100vw;
+          height: 100vh;
+          background: #f7f7f9 !important;
+          box-shadow: -2px 0 8px rgba(0,0,0,0.08);
+          z-index: 100;
           padding: 16px;
-          height: 100%;
           overflow-y: auto;
+          display: none;
+        }
+        .properties-panel.visible {
+          display: block;
+        }
+        .property-close {
+          float: right;
+          font-size: 22px;
+          background: none;
+          border: none;
+          color: #888;
+          cursor: pointer;
+          margin-left: 12px;
         }
 
         .properties-panel h3 {
@@ -170,9 +190,17 @@ export class PropertiesPanel {
   }
 
   setupEventListeners() {
-    // Listen for asset selection
-    this.eventBus.on('object:selected', (objects) => {
+    // Listen for double-click edit mode
+    this.eventBus.on('object:editRequested', (objects) => {
       if (objects && objects.length > 0) {
+        this.editMode = true;
+        this.selectAsset(objects[0]);
+      }
+    });
+
+    // Listen for asset selection (single click)
+    this.eventBus.on('object:selected', (objects) => {
+      if (!this.editMode && objects && objects.length > 0) {
         this.selectAsset(objects[0]);
       }
     });
@@ -198,29 +226,37 @@ export class PropertiesPanel {
       if (e.target.classList.contains('property-button')) {
         this.handleButtonClick(e.target);
       }
+      if (e.target.classList.contains('property-close')) {
+        this.editMode = false;
+        this.deselectAsset();
+      }
     });
   }
 
   selectAsset(fabricObject) {
     this.selectedObject = fabricObject;
     this.selectedAsset = fabricObject.assetData;
-    
-    if (this.selectedAsset) {
+    if (this.selectedAsset && this.editMode) {
       this.renderProperties();
+      this.showPanel();
+    } else {
+      this.hidePanel();
     }
   }
 
   deselectAsset() {
     this.selectedObject = null;
     this.selectedAsset = null;
+    this.editMode = false;
     this.render();
+    this.hidePanel();
   }
 
   renderProperties() {
     const content = this.container.querySelector('#properties-content');
-    
-    if (!this.selectedAsset) {
+    if (!this.selectedAsset || !this.editMode) {
       content.innerHTML = '<div class="no-selection"><p>Select an asset to edit its properties</p></div>';
+      this.hidePanel();
       return;
     }
 
@@ -408,13 +444,18 @@ export class PropertiesPanel {
     if (!this.selectedAsset || !this.selectedObject) return;
 
     const property = input.dataset.property;
-    const value = input.type === 'number' ? parseFloat(input.value) : input.value;
+    let value;
+    if (input.type === 'number' || input.type === 'range') {
+      value = parseFloat(input.value);
+    } else {
+      value = input.value;
+    }
 
     // Update the asset data
     this.setNestedProperty(this.selectedAsset, property, value);
 
-    // Update the Fabric.js object
-    this.updateFabricObject();
+    // Update the Fabric.js object and canvas immediately
+    this.updateFabricObject(property, value);
 
     // Emit change event for saving
     this.eventBus.emit('asset:propertyChanged', {
@@ -463,39 +504,140 @@ export class PropertiesPanel {
   updateFabricObject() {
     if (!this.selectedObject || !this.selectedAsset) return;
 
-    // Update transform properties directly
+    // Always update transform properties
+    // If the object knows its cell origin, position is relative to that
+    const cellOffset = this.selectedObject.cellOffset || { x: 0, y: 0 };
     this.selectedObject.set({
+      left: cellOffset.x + (this.selectedAsset.position.x || 0),
+      top: cellOffset.y + (this.selectedAsset.position.y || 0),
       scaleX: this.selectedAsset.scale.x,
       scaleY: this.selectedAsset.scale.y,
       angle: this.selectedAsset.rotation,
       opacity: this.selectedAsset.opacity
     });
+    this.selectedObject.setCoords();
+    this.selectedObject.dirty = true;
 
-    // For text properties, try to update directly instead of full refresh
-    if (this.selectedAsset.type === 'speechBubble' && this.selectedAsset.text !== undefined) {
-      // Try to find and update text object within the group
+    let needsRefresh = false;
+
+    // Asset-specific real-time updates
+    if (this.selectedAsset.type === 'speechBubble') {
+      if (this.selectedObject.type === 'group') {
+        // Update text
+        const textObject = this.selectedObject.getObjects().find(obj => obj.type === 'text');
+        if (textObject) {
+          textObject.set({
+            text: this.selectedAsset.text || 'Hello!',
+            fontSize: this.selectedAsset.fontSize || 14,
+            fill: this.selectedAsset.textColor || '#000000'
+          });
+          textObject.setCoords();
+          textObject.dirty = true;
+        }
+        // Update all non-text shapes (bubble + tail)
+        this.selectedObject.getObjects().forEach(obj => {
+          if (obj.type !== 'text') {
+            obj.set({
+              fill: this.selectedAsset.bubbleColor || '#ffffff',
+              stroke: this.selectedAsset.borderColor || '#000000'
+            });
+            obj.setCoords();
+            obj.dirty = true;
+          }
+        });
+        if (typeof this.selectedObject._calcBounds === 'function') {
+          this.selectedObject._calcBounds();
+        }
+        if (typeof this.selectedObject._updateObjectsCoords === 'function') {
+          this.selectedObject._updateObjectsCoords();
+        }
+      }
+      // Only trigger full refresh if bubbleStyle changed
+      if (this._lastBubbleStyle !== undefined && this._lastBubbleStyle !== this.selectedAsset.bubbleStyle) {
+        needsRefresh = true;
+      }
+      this._lastBubbleStyle = this.selectedAsset.bubbleStyle;
+    } else if (this.selectedAsset.type === 'actionShape') {
       if (this.selectedObject.type === 'group') {
         const textObject = this.selectedObject.getObjects().find(obj => obj.type === 'text');
         if (textObject) {
-          textObject.set('text', this.selectedAsset.text || 'Hello!');
+          textObject.set({
+            text: this.selectedAsset.text || '',
+            fontSize: this.selectedAsset.fontSize || 28,
+            fill: this.selectedAsset.textColor || '#ffffff'
+          });
+          textObject.setCoords();
+          textObject.dirty = true;
+        }
+        // Update shapes: direct children and nested groups
+        this.selectedObject.getObjects().forEach(obj => {
+          if (obj.type === 'text') return;
+          if (obj.type === 'group' && typeof obj.getObjects === 'function') {
+            obj.getObjects().forEach(child => {
+              if (child.type !== 'text') {
+                child.set({
+                  fill: this.selectedAsset.backgroundColor || '#ff4444',
+                  stroke: this.selectedAsset.borderColor || '#000000'
+                });
+                child.setCoords();
+                child.dirty = true;
+              }
+            });
+          } else {
+            obj.set({
+              fill: this.selectedAsset.backgroundColor || '#ff4444',
+              stroke: this.selectedAsset.borderColor || '#000000'
+            });
+            obj.setCoords();
+            obj.dirty = true;
+          }
+        });
+        if (typeof this.selectedObject._calcBounds === 'function') {
+          this.selectedObject._calcBounds();
+        }
+        if (typeof this.selectedObject._updateObjectsCoords === 'function') {
+          this.selectedObject._updateObjectsCoords();
         }
       }
+      if (this._lastShapeStyle !== undefined && this._lastShapeStyle !== this.selectedAsset.shapeStyle) {
+        needsRefresh = true;
+      }
+      this._lastShapeStyle = this.selectedAsset.shapeStyle;
+    } else if (this.selectedAsset.type === 'character') {
+      // Only trigger full refresh if type/expression/skin/hair changed
+      if (
+        (this._lastCharacterType !== undefined && this._lastCharacterType !== this.selectedAsset.characterType) ||
+        (this._lastExpression !== undefined && this._lastExpression !== this.selectedAsset.expression) ||
+        (this._lastSkinColor !== undefined && this._lastSkinColor !== this.selectedAsset.skinColor) ||
+        (this._lastHairColor !== undefined && this._lastHairColor !== this.selectedAsset.hairColor)
+      ) {
+        needsRefresh = true;
+      }
+      this._lastCharacterType = this.selectedAsset.characterType;
+      this._lastExpression = this.selectedAsset.expression;
+      this._lastSkinColor = this.selectedAsset.skinColor;
+      this._lastHairColor = this.selectedAsset.hairColor;
     }
 
-    // Re-render canvas without causing selection events
-    this.eventBus.emit('canvas:renderAll');
-    
-    // Only refresh for complex changes (colors, etc) that require full re-render
-    const needsFullRefresh = this.selectedAsset.type === 'character' || 
-                            (this.selectedAsset.type === 'speechBubble' && this.selectedAsset.bubbleStyle) ||
-                            (this.selectedAsset.type === 'actionShape' && this.selectedAsset.shapeStyle);
-    
-    if (needsFullRefresh) {
-      // Temporarily disable selection events during refresh
+  // Re-render canvas immediately for all direct property changes
+  this.eventBus.emit('canvas:renderAll');
+
+    // Only trigger full asset refresh for style/type changes
+    if (needsRefresh) {
       this.eventBus.emit('asset:refresh', {
         assetId: this.selectedAsset.id,
         cellId: this.selectedObject.cellId
       });
     }
+  }
+
+  showPanel() {
+    const panel = this.container.querySelector('.properties-panel');
+    if (panel) panel.classList.add('visible');
+  }
+
+  hidePanel() {
+    const panel = this.container.querySelector('.properties-panel');
+    if (panel) panel.classList.remove('visible');
   }
 }

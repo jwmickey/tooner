@@ -102,6 +102,47 @@ export class ComicStripEditor {
       console.log('Asset dropped:', assetData, 'at position:', position);
       this.handleAssetDrop(assetData, position);
     });
+
+    // Real-time canvas render requests from other components (e.g., PropertiesPanel)
+    this.eventBus.on('canvas:renderAll', () => {
+      if (this.canvas && typeof this.canvas.requestRenderAll === 'function') {
+        this.canvas.requestRenderAll();
+      } else if (this.canvas) {
+        this.canvas.renderAll();
+      }
+    });
+
+    // Refresh/recreate an asset (e.g., when style/type changes)
+    this.eventBus.on('asset:refresh', ({ assetId, cellId }) => {
+      this.refreshAsset(assetId, cellId);
+    });
+
+    // Delete asset from external actions (e.g., PropertiesPanel button)
+    this.eventBus.on('asset:delete', ({ assetId, cellId }) => {
+      this.deleteAsset(assetId, cellId);
+    });
+
+    // Persist live property changes into the data model for saving/export
+    this.eventBus.on('asset:propertyChanged', ({ assetId, property, value }) => {
+      if (!this.comicStrip) return;
+      const canvasObj = this.canvas?.getObjects().find(o => o.assetId === assetId);
+      if (!canvasObj) return;
+      const cell = this.cells.find(c => c.id === canvasObj.cellId);
+      if (!cell) return;
+      const asset = cell.data.assets.find(a => a.id === assetId);
+      if (!asset) return;
+
+      // Apply nested property update to the model asset
+      const keys = property.split('.');
+      let current = asset;
+      for (let i = 0; i < keys.length - 1; i++) {
+        if (!(keys[i] in current) || typeof current[keys[i]] !== 'object') {
+          current[keys[i]] = {};
+        }
+        current = current[keys[i]];
+      }
+      current[keys[keys.length - 1]] = value;
+    });
   }
 
   handleAssetDragStart(asset) {
@@ -323,8 +364,15 @@ export class ComicStripEditor {
       fabricObject.assetId = assetData.id;
       fabricObject.cellId = cellId;
       fabricObject.assetData = assetData;
+  // Persist the cell's origin to correctly compute absolute position during property edits
+  fabricObject.cellOffset = { x: cell.bounds.x, y: cell.bounds.y };
 
       this.canvas.add(fabricObject);
+
+      // Add double-click event for edit mode
+      fabricObject.on('mousedblclick', () => {
+        this.eventBus.emit('object:editRequested', [fabricObject]);
+      });
     }
   }
 
