@@ -1,4 +1,4 @@
-import { Canvas, Rect, Ellipse, Text, Group, Circle } from 'fabric';
+import { Canvas, StaticCanvas, Rect, Ellipse, Text, Group, Circle } from 'fabric';
 import { ComicStrip } from '../../models/ComicStrip.js';
 import { SpeechBubble } from '../../models/Components/SpeechBubble.js';
 import { ActionShape } from '../../models/Components/ActionShape.js';
@@ -18,6 +18,7 @@ export class ComicStripEditor {
     this.cellWidth = 200;
     this.cellHeight = 200;
     this.cellSpacing = 10;
+  this.thumbnailCache = new Map();
     
     this.init();
   }
@@ -32,10 +33,15 @@ export class ComicStripEditor {
   }
 
   createCanvas() {
-    // Create canvas element
+    // Prepare containers: thumbnails strip and active canvas host exist in DOM
+    const activeHost = this.container.querySelector('#active-canvas') || this.container;
+    const thumbsHost = this.container.querySelector('#cell-thumbnails');
+    this.thumbsHost = thumbsHost;
+
+    // Create canvas element inside active host
     const canvasElement = document.createElement('canvas');
     canvasElement.id = 'comic-canvas';
-    this.container.appendChild(canvasElement);
+    activeHost.appendChild(canvasElement);
 
     // Initialize Fabric.js canvas
     this.canvas = new Canvas('comic-canvas', {
@@ -50,7 +56,10 @@ export class ComicStripEditor {
     this.canvas.renderAll();
 
     // Make canvas responsive
-    this.makeCanvasResponsive();
+  this.makeCanvasResponsive();
+
+  // Initial thumbnails render placeholder
+  this.renderThumbnails();
   }
 
   makeCanvasResponsive() {
@@ -86,7 +95,7 @@ export class ComicStripEditor {
       console.log('ComicStripEditor received comic strip data:', comicStripData);
       this.currentComicStrip = comicStripData;
       this.comicStrip = new ComicStrip(comicStripData); // Create ComicStrip instance
-      this.renderComicStrip();
+  this.renderComicStrip();
     });
 
     this.eventBus.on('asset:dragStart', (asset) => {
@@ -101,6 +110,9 @@ export class ComicStripEditor {
     this.eventBus.on('asset:drop', (assetData, position) => {
       console.log('Asset dropped:', assetData, 'at position:', position);
       this.handleAssetDrop(assetData, position);
+  // active cell changed -> invalidate its thumbnail
+  if (this.activeCellId) this.invalidateThumbnail(this.activeCellId);
+  this.renderThumbnails();
     });
 
     // Real-time canvas render requests from other components (e.g., PropertiesPanel)
@@ -115,11 +127,15 @@ export class ComicStripEditor {
     // Refresh/recreate an asset (e.g., when style/type changes)
     this.eventBus.on('asset:refresh', ({ assetId, cellId }) => {
       this.refreshAsset(assetId, cellId);
+  this.invalidateThumbnail(cellId);
+  this.renderThumbnails();
     });
 
     // Delete asset from external actions (e.g., PropertiesPanel button)
     this.eventBus.on('asset:delete', ({ assetId, cellId }) => {
       this.deleteAsset(assetId, cellId);
+  this.invalidateThumbnail(cellId);
+  this.renderThumbnails();
     });
 
     // Persist live property changes into the data model for saving/export
@@ -141,7 +157,11 @@ export class ComicStripEditor {
         }
         current = current[keys[i]];
       }
-      current[keys[keys.length - 1]] = value;
+  current[keys[keys.length - 1]] = value;
+  // Live thumbnail refresh for the active cell's data change
+  const cellId = canvasObj.cellId;
+  this.invalidateThumbnail(cellId);
+  this.renderThumbnails();
     });
   }
 
@@ -245,8 +265,32 @@ export class ComicStripEditor {
 
   renderComicStrip() {
     console.log('renderComicStrip called, currentComicStrip:', this.currentComicStrip);
-    
-    // Clear canvas
+
+    // Ensure thumbnails reflect current cells
+  this.renderThumbnails();
+
+    if (!this.comicStrip) {
+      console.log('No comicStrip instance found');
+      return;
+    }
+
+    // Choose active cell if unset
+    if (!this.activeCellId && this.comicStrip.cells.length) {
+      this.activeCellId = this.comicStrip.cells[0].id;
+    }
+
+    // Render only active cell into the main canvas
+    this.renderActiveCell();
+  }
+
+  invalidateThumbnail(cellId) {
+    if (cellId && this.thumbnailCache.has(cellId)) {
+      this.thumbnailCache.delete(cellId);
+    }
+  }
+
+  renderActiveCell() {
+    // Clear canvas and state
     this.canvas.clear();
     this.cells = [];
 
@@ -254,48 +298,249 @@ export class ComicStripEditor {
     this.canvas.backgroundColor = '#f8f9fa';
     this.canvas.renderAll();
 
-    if (!this.comicStrip) {
-      console.log('No comicStrip instance found');
-      return;
-    }
-    
-    console.log('Rendering comic strip with', this.comicStrip.cells.length, 'cells');
-    
-    // Calculate layout
-    this.updateCellLayout();
+    if (!this.comicStrip || !this.activeCellId) return;
 
-    // Render cells
-    this.comicStrip.cells.forEach((cellData, index) => {
-      this.renderCell(cellData, index);
+    const cellData = this.comicStrip.getCell(this.activeCellId);
+    if (!cellData) return;
+
+    // Fit active cell with margins
+    const margin = 20;
+    const width = this.canvas.getWidth() - margin * 2;
+    const height = this.canvas.getHeight() - margin * 2;
+    this.cellWidth = width;
+    this.cellHeight = height;
+    this.cellSpacing = margin;
+
+    // Render a single cell occupying the canvas area with margin
+    this.renderCell(cellData, 0);
+    this.canvas.renderAll();
+  // After we render, invalidate the thumbnail cache for this cell and regenerate
+  this.invalidateThumbnail(this.activeCellId);
+  this.renderThumbnails();
+  }
+
+  renderThumbnails() {
+    if (!this.thumbsHost) return;
+    // Clear
+    this.thumbsHost.innerHTML = '';
+    const cells = this.comicStrip?.cells || [];
+    cells.forEach((cell, idx) => {
+      const el = document.createElement('div');
+      el.className = 'cell-thumb' + (cell.id === this.activeCellId ? ' active' : '');
+      el.dataset.cellId = cell.id;
+      el.title = `Cell ${idx + 1}`;
+
+      // Number badge
+      const badge = document.createElement('span');
+      badge.className = 'cell-number';
+      badge.textContent = String(idx + 1);
+      el.appendChild(badge);
+
+      // Mini preview canvas
+      const thumbCanvas = document.createElement('canvas');
+      thumbCanvas.width = 140; // match css flex basis
+      thumbCanvas.height = 90;
+      el.appendChild(thumbCanvas);
+      this.renderThumbnailPreview(thumbCanvas, cell);
+
+      // Delete cell button (if more than 1)
+      if (cells.length > 1) {
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.textContent = '×';
+        del.title = 'Delete Cell';
+        del.style.position = 'absolute';
+        del.style.top = '4px';
+        del.style.right = '6px';
+        del.style.background = 'rgba(0,0,0,0.5)';
+        del.style.color = '#fff';
+        del.style.border = 'none';
+        del.style.borderRadius = '3px';
+        del.style.width = '18px';
+        del.style.height = '18px';
+        del.style.lineHeight = '18px';
+        del.style.cursor = 'pointer';
+        del.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const currentIdx = this.comicStrip.cells.findIndex(c => c.id === cell.id);
+          // Remove from model
+          this.comicStrip.removeCell(cell.id);
+          // Update active cell
+          if (this.activeCellId === cell.id) {
+            const nextIdx = Math.min(currentIdx, this.comicStrip.cells.length - 1);
+            this.activeCellId = this.comicStrip.cells[nextIdx]?.id;
+          }
+          // Invalidate cache and rerender
+          this.thumbnailCache.delete(cell.id);
+          this.renderThumbnails();
+          this.renderActiveCell();
+        });
+        el.appendChild(del);
+      }
+
+      el.addEventListener('click', () => {
+        this.activeCellId = cell.id;
+        this.renderThumbnails();
+        this.renderActiveCell();
+      });
+      this.thumbsHost.appendChild(el);
     });
 
-    this.canvas.renderAll();
+    // Add Cell button
+    const addBtn = document.createElement('div');
+    addBtn.className = 'cell-thumb add-cell';
+    addBtn.title = 'Add Cell';
+    addBtn.textContent = '+ Add Cell';
+    addBtn.addEventListener('click', () => {
+      const newCell = this.comicStrip.addCell();
+      this.activeCellId = newCell.id;
+      this.renderThumbnails();
+      this.renderActiveCell();
+    });
+    this.thumbsHost.appendChild(addBtn);
+
+    // Keyboard navigation (left/right)
+    this.enableKeyboardNav();
+  }
+
+  renderThumbnailPreview(canvasEl, cell) {
+    // If cached image exists, paint it quickly and return
+    const cached = this.thumbnailCache.get(cell.id);
+    if (cached) {
+      const ctx = canvasEl.getContext('2d');
+      const img = new Image();
+      img.onload = () => {
+        ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+        ctx.drawImage(img, 0, 0, canvasEl.width, canvasEl.height);
+      };
+      img.src = cached;
+      return;
+    }
+
+    // Render to an offscreen StaticCanvas for better control, then cache as data URL
+    const offscreen = new StaticCanvas(null, {
+      width: canvasEl.width,
+      height: canvasEl.height,
+      backgroundColor: 'transparent',
+      preserveObjectStacking: true
+    });
+
+    const margin = 20;
+    const baseWidth = Math.max(200, (this.canvas?.getWidth?.() || 800) - margin * 2);
+    const baseHeight = Math.max(160, (this.canvas?.getHeight?.() || 600) - margin * 2);
+    const scale = Math.min(canvasEl.width / baseWidth, canvasEl.height / baseHeight);
+    const offsetX = (canvasEl.width - baseWidth * scale) / 2;
+    const offsetY = (canvasEl.height - baseHeight * scale) / 2;
+
+    const bgRect = new Rect({
+      left: offsetX,
+      top: offsetY,
+      width: baseWidth * scale,
+      height: baseHeight * scale,
+      fill: cell.background?.color || '#ffffff',
+      stroke: '#cfd8dc',
+      strokeWidth: 1,
+      selectable: false,
+      evented: false
+    });
+    offscreen.add(bgRect);
+
+    (cell.assets || []).forEach((asset) => {
+      const cloned = {
+        ...asset,
+        position: {
+          x: (asset.position?.x || 0) * scale,
+          y: (asset.position?.y || 0) * scale
+        },
+        scale: {
+          x: (asset.scale?.x || 1) * scale,
+          y: (asset.scale?.y || 1) * scale
+        },
+        rotation: asset.rotation || 0,
+        opacity: asset.opacity == null ? 1 : asset.opacity
+      };
+
+      let obj;
+      switch (asset.type) {
+        case 'speechBubble':
+          obj = new SpeechBubble(cloned).render(offscreen);
+          break;
+        case 'actionShape':
+          obj = new ActionShape(cloned).render(offscreen);
+          break;
+        case 'character':
+          obj = new Character(cloned).render(offscreen);
+          break;
+        default:
+          obj = new Rect({ width: 40 * scale, height: 40 * scale, fill: '#ff6b6b' });
+      }
+      if (obj) {
+        obj.set({
+          left: offsetX + cloned.position.x,
+          top: offsetY + cloned.position.y,
+          selectable: false,
+          evented: false
+        });
+        offscreen.add(obj);
+      }
+    });
+
+    offscreen.renderAll();
+    const dataUrl = offscreen.toDataURL({ format: 'png' });
+    this.thumbnailCache.set(cell.id, dataUrl);
+    // Paint to visible canvas
+    const ctx = canvasEl.getContext('2d');
+    const img = new Image();
+    img.onload = () => {
+      ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+      ctx.drawImage(img, 0, 0, canvasEl.width, canvasEl.height);
+      offscreen.dispose();
+    };
+    img.src = dataUrl;
+  }
+
+  enableKeyboardNav() {
+    if (this._keyboardNavBound) return;
+    this._keyboardNavBound = true;
+    window.addEventListener('keydown', (e) => {
+      if (!this.comicStrip || !this.comicStrip.cells.length) return;
+      const idx = this.comicStrip.cells.findIndex(c => c.id === this.activeCellId);
+      if (idx === -1) return;
+      if (e.key === 'ArrowRight') {
+        const next = Math.min(this.comicStrip.cells.length - 1, idx + 1);
+        if (next !== idx) {
+          this.activeCellId = this.comicStrip.cells[next].id;
+          this.renderThumbnails();
+          this.renderActiveCell();
+          this.scrollActiveThumbIntoView();
+        }
+      } else if (e.key === 'ArrowLeft') {
+        const prev = Math.max(0, idx - 1);
+        if (prev !== idx) {
+          this.activeCellId = this.comicStrip.cells[prev].id;
+          this.renderThumbnails();
+          this.renderActiveCell();
+          this.scrollActiveThumbIntoView();
+        }
+      }
+    });
+  }
+
+  scrollActiveThumbIntoView() {
+    const active = this.thumbsHost?.querySelector('.cell-thumb.active');
+    if (active && typeof active.scrollIntoView === 'function') {
+      active.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    }
   }
 
   updateCellLayout() {
-    const canvasWidth = this.canvas.width;
-    const canvasHeight = this.canvas.height;
-    
-    // Calculate optimal cell size and layout
-    const totalCells = this.comicStrip ? this.comicStrip.cells.length : 5;
-    const cols = Math.min(totalCells, Math.floor(canvasWidth / (this.cellWidth + this.cellSpacing)));
-    const rows = Math.ceil(totalCells / cols);
-    
-    // Adjust cell size if needed
-    const availableWidth = canvasWidth - (this.cellSpacing * (cols + 1));
-    const availableHeight = canvasHeight - (this.cellSpacing * (rows + 1));
-    
-    this.cellWidth = Math.min(200, availableWidth / cols);
-    this.cellHeight = Math.min(200, availableHeight / rows);
+    // For the active canvas view, layout is controlled in renderActiveCell
   }
 
   renderCell(cellData, index) {
-    const cols = Math.floor(this.canvas.width / (this.cellWidth + this.cellSpacing));
-    const row = Math.floor(index / cols);
-    const col = index % cols;
-    
-    const x = this.cellSpacing + col * (this.cellWidth + this.cellSpacing);
-    const y = this.cellSpacing + row * (this.cellHeight + this.cellSpacing);
+    // Active cell occupies full canvas area with margins at (cellSpacing, cellSpacing)
+    const x = this.cellSpacing;
+    const y = this.cellSpacing;
 
     // Create cell background
     const cellBg = new Rect({
