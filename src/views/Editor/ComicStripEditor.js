@@ -18,7 +18,11 @@ export class ComicStripEditor {
     this.cellWidth = 200;
     this.cellHeight = 200;
     this.cellSpacing = 10;
-  this.thumbnailCache = new Map();
+    this.thumbnailCache = new Map();
+    
+    // Load editor preferences with defaults
+    const defaults = { gridSize: 10, showGrid: false, snapMode: 'grid' };
+    this.editorPrefs = this.storage.load('editorPrefs') || defaults;
     
     this.init();
   }
@@ -50,6 +54,11 @@ export class ComicStripEditor {
       backgroundColor: '#f8f9fa',
       selection: true,
       preserveObjectStacking: true
+    });
+
+    // Add grid overlay rendering
+    this.canvas.on('before:render', () => {
+      this.drawGridOverlay();
     });
 
     // Force initial render
@@ -205,6 +214,12 @@ export class ComicStripEditor {
     this.canvas.on('object:moving', (e) => {
       isDragging = true;
       this.constrainObjectToCell(e.target);
+      this.snapObjectToGrid(e.target);
+    });
+
+    this.canvas.on('object:scaling', (e) => {
+      this.constrainObjectToCell(e.target);
+      this.snapObjectToGrid(e.target);
     });
 
     this.canvas.on('mouse:up', (e) => {
@@ -503,6 +518,70 @@ export class ComicStripEditor {
     if (this._keyboardNavBound) return;
     this._keyboardNavBound = true;
     window.addEventListener('keydown', (e) => {
+      // Handle grid toggle with 'G' key
+      if (e.key === 'g' || e.key === 'G') {
+        this.updateEditorPrefs({ showGrid: !this.editorPrefs.showGrid });
+        console.log('Grid toggled:', this.editorPrefs.showGrid);
+        return;
+      }
+      
+      // Handle object nudging for selected objects
+      const activeObject = this.canvas?.getActiveObject();
+      if (activeObject && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        
+        const nudgeDistance = e.shiftKey ? 10 : 1;
+        let deltaX = 0;
+        let deltaY = 0;
+        
+        switch (e.key) {
+          case 'ArrowLeft':
+            deltaX = -nudgeDistance;
+            break;
+          case 'ArrowRight':
+            deltaX = nudgeDistance;
+            break;
+          case 'ArrowUp':
+            deltaY = -nudgeDistance;
+            break;
+          case 'ArrowDown':
+            deltaY = nudgeDistance;
+            break;
+        }
+        
+        // Apply nudge
+        activeObject.set({
+          left: activeObject.left + deltaX,
+          top: activeObject.top + deltaY
+        });
+        
+        // Apply constraints and snapping
+        this.constrainObjectToCell(activeObject);
+        this.snapObjectToGrid(activeObject);
+        
+        // Update coordinates and render
+        activeObject.setCoords();
+        this.canvas.renderAll();
+        
+        // Update the asset model
+        this.updateAssetFromFabricObject(activeObject);
+        
+        // Emit property change event
+        if (activeObject.assetId) {
+          this.eventBus.emit('asset:propertyChanged', {
+            assetId: activeObject.assetId,
+            property: 'position',
+            value: {
+              x: activeObject.left - (this.cells.find(c => c.id === activeObject.cellId)?.bounds?.x || 0),
+              y: activeObject.top - (this.cells.find(c => c.id === activeObject.cellId)?.bounds?.y || 0)
+            }
+          });
+        }
+        
+        return; // Don't process cell navigation when object is selected
+      }
+      
+      // Original cell navigation logic (only when no object is selected)
       if (!this.comicStrip || !this.comicStrip.cells.length) return;
       const idx = this.comicStrip.cells.findIndex(c => c.id === this.activeCellId);
       if (idx === -1) return;
@@ -882,6 +961,33 @@ export class ComicStripEditor {
     fabricObject.set({ left: newLeft, top: newTop });
   }
 
+  snapObjectToGrid(fabricObject) {
+    if (!fabricObject.cellId || this.editorPrefs.snapMode !== 'grid' || this.editorPrefs.gridSize <= 0) {
+      return;
+    }
+
+    const cell = this.cells.find(c => c.id === fabricObject.cellId);
+    if (!cell) return;
+
+    const bounds = cell.bounds;
+    const gridSize = this.editorPrefs.gridSize;
+
+    // Convert object position to cell-relative coordinates
+    const cellRelativeX = fabricObject.left - bounds.x;
+    const cellRelativeY = fabricObject.top - bounds.y;
+
+    // Snap to nearest grid point
+    const snappedX = Math.round(cellRelativeX / gridSize) * gridSize;
+    const snappedY = Math.round(cellRelativeY / gridSize) * gridSize;
+
+    // Convert back to absolute coordinates
+    const newLeft = bounds.x + snappedX;
+    const newTop = bounds.y + snappedY;
+
+    fabricObject.set({ left: newLeft, top: newTop });
+    fabricObject.setCoords();
+  }
+
   updateAssetFromFabricObject(fabricObject) {
     if (!fabricObject.assetId || !fabricObject.cellId) return;
 
@@ -922,6 +1028,61 @@ export class ComicStripEditor {
         const json = JSON.stringify(this.comicStrip.toJSON(), null, 2);
         this.downloadFile(json, 'comic-strip.json', 'application/json');
         break;
+    }
+  }
+
+  // Editor preferences management
+  updateEditorPrefs(updates) {
+    this.editorPrefs = { ...this.editorPrefs, ...updates };
+    this.storage.save('editorPrefs', this.editorPrefs);
+    this.eventBus.emit('editor:prefsChanged', this.editorPrefs);
+    
+    // Trigger UI updates based on changed preferences
+    if (updates.hasOwnProperty('showGrid') || updates.hasOwnProperty('gridSize')) {
+      this.updateGridOverlay();
+    }
+  }
+
+  drawGridOverlay() {
+    if (!this.editorPrefs.showGrid || this.editorPrefs.gridSize <= 0 || !this.cells.length) {
+      return;
+    }
+
+    const ctx = this.canvas.getContext();
+    const cell = this.cells[0]; // Active cell is the first (and only) cell in single-cell view
+    if (!cell) return;
+
+    const bounds = cell.bounds;
+    const gridSize = this.editorPrefs.gridSize;
+
+    ctx.save();
+    ctx.strokeStyle = '#e0e0e0';
+    ctx.lineWidth = 0.5;
+    ctx.setLineDash([1, 1]);
+
+    // Draw vertical lines
+    for (let x = bounds.x; x <= bounds.x + bounds.width; x += gridSize) {
+      ctx.beginPath();
+      ctx.moveTo(x, bounds.y);
+      ctx.lineTo(x, bounds.y + bounds.height);
+      ctx.stroke();
+    }
+
+    // Draw horizontal lines
+    for (let y = bounds.y; y <= bounds.y + bounds.height; y += gridSize) {
+      ctx.beginPath();
+      ctx.moveTo(bounds.x, y);
+      ctx.lineTo(bounds.x + bounds.width, y);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  updateGridOverlay() {
+    // Redraw the canvas to update grid visibility
+    if (this.canvas) {
+      this.canvas.renderAll();
     }
   }
 
